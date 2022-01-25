@@ -15,6 +15,7 @@ const filterProperties = (allowProperties = [], disallowProperties = [], propert
   .filter((key) => (allowProperties.length < 1 || allowProperties.includes(key)))
   .filter((key) => (disallowProperties.length < 1 || !disallowProperties.includes(key)))
   .reduce((object, key) => ({ ...object, [key]: properties[key] }), {});
+const checkFirebaseConfig = (firebaseConfig) => (firebaseConfig?.apiKey && firebaseConfig?.authDomain && firebaseConfig?.appId);
 
 // --- Debug module ---
 if (__analytics.debug?.isEnabled) {
@@ -181,9 +182,11 @@ if (__analytics.amplitude?.isEnabled) {
     const { initializeApp } = await import('firebase/app');
     const { getAuth, signInAnonymously, onAuthStateChanged } = await import('firebase/auth');
 
+    const { environment, firebaseConfig } = __analytics.infermedicaAnalytics;
+    const isFirebaseAuth = checkFirebaseConfig(firebaseConfig);
+
     const infermedicaModule = function () {
       const baseURL = __analytics.infermedicaAnalytics?.baseURL || 'https://analytics-proxy.infermedica.com/';
-      const { environment, firebaseConfig } = __analytics.infermedicaAnalytics;
       const browser = Bowser.getParser(window.navigator.userAgent);
       const headers = {
         'infer-application-id': __analytics.infermedicaAnalytics?.appId,
@@ -209,32 +212,37 @@ if (__analytics.amplitude?.isEnabled) {
           topic: topic || __analytics.infermedicaAnalytics.topic,
           events,
         };
-        const token = await firebaseUser.getIdToken();
-        analyticsApi.defaults.headers.Authorization = `Bearer ${token}`;
+        if (isFirebaseAuth) {
+          const token = await firebaseUser.getIdToken();
+          analyticsApi.defaults.headers.Authorization = `Bearer ${token}`;
+        }
         await analyticsApi.post(publishURL, payload);
       };
-      initializeApp(firebaseConfig);
-      const auth = getAuth();
-      signInAnonymously(auth);
-      let eventQueue = [];
       const getUid = () => (__analytics.infermedicaAnalytics?.sendUID
         ? firebaseUser.uid
         : null);
-      onAuthStateChanged(auth, async (user) => {
-        if (!user) return;
-        firebaseUser = user;
-        eventQueue.forEach((event) => {
-          const { user } = event;
-          publish({
-            ...event,
-            user: {
-              ...user,
-              id: getUid(),
-            },
+      
+      if (isFirebaseAuth) {
+        initializeApp(firebaseConfig);
+        const auth = getAuth();
+        signInAnonymously(auth);
+        let eventQueue = [];
+        onAuthStateChanged(auth, async (user) => {
+          if (!user) return;
+          firebaseUser = user;
+          eventQueue.forEach((event) => {
+            const { user } = event;
+            publish({
+              ...event,
+              user: {
+                ...user,
+                id: getUid(),
+              },
+            });
           });
+          eventQueue = [];
         });
-        eventQueue = [];
-      });
+      }
 
       return {
         name: names.INFERMEDICA_ANALYTICS,
@@ -271,7 +279,7 @@ if (__analytics.amplitude?.isEnabled) {
               ...filteredProperties.event_details,
             },
           };
-          if (!firebaseUser) {
+          if (isFirebaseAuth && !firebaseUser) {
             eventQueue.push(data);
             return;
           }
